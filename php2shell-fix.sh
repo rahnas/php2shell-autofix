@@ -28,6 +28,9 @@
 #   macOS (Homebrew): run it WITHOUT sudo.
 #
 # Run with --help for all options.
+#
+# Co-authored by Remiz Rahnas of Wizeb.com (https://wizeb.com) with Claude.
+# Source: https://github.com/rahnas/php2shell-autofix — MIT License.
 
 VERSION="1.0.0"
 CVE_A="CVE-2026-109618"
@@ -65,6 +68,9 @@ Usage:  sudo bash php2shell-fix.sh [options]        (macOS/Homebrew: no sudo)
 
 Exit codes: 0 = everything safe, 1 = something still needs attention, 2 = error.
 Log: /var/log/php2shell-fix.log (macOS: ~/Library/Logs/php2shell-fix.log)
+
+Co-authored by Remiz Rahnas of Wizeb.com with Claude.
+https://github.com/rahnas/php2shell-autofix (MIT License)
 EOF
 }
 

@@ -131,6 +131,10 @@ Backups and the rollback script: `/var/backups/php2shell-fix/<run>/`.
 Run `--dry-run` first, and audit any script you pipe into `sudo bash`. Publish the
 script with a SHA256 checksum so others can verify it.
 
+## Credits
+
+Co-authored by **Remiz Rahnas** of [Wizeb.com](https://wizeb.com) with Claude.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
