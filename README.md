@@ -13,7 +13,7 @@ changelogs instead of trusting `php -v`.
 **One command for every PHP version** — 8.x, 7.x, 5.6, all of them:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rahnas/php2shell-autofix/main/php2shell-fix.sh | sudo bash
+curl -fsSL https://php2shell.wizeb.com/autofix | sudo bash
 ```
 
 On macOS with Homebrew, run the same command **without** `sudo`.
@@ -23,7 +23,7 @@ PHP 7.4 is patched to a fixed **7.4** build (from your distro, Ondřej Surý or 
 not upgraded to PHP 8. Want to see the plan first? Add `-s -- --dry-run`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rahnas/php2shell-autofix/main/php2shell-fix.sh | sudo bash -s -- --dry-run
+curl -fsSL https://php2shell.wizeb.com/autofix | sudo bash -s -- --dry-run
 ```
 
 ### Only if the summary tells you to: `--force`
@@ -35,10 +35,23 @@ rather upgrade PHP instead, `--force` moves it to a supported version (8.3 by de
 after checking your code:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rahnas/php2shell-autofix/main/php2shell-fix.sh | sudo bash -s -- --force --project /var/www/app
+curl -fsSL https://php2shell.wizeb.com/autofix | sudo bash -s -- --force --project /var/www/app
 ```
 
 Don't use `--force` "just in case": it changes your PHP version, and old apps can break.
+
+### Verify before you run it (optional)
+
+`php2shell.wizeb.com/autofix` redirects to the script in this repository. To check the
+download against the published checksum before running it:
+
+```bash
+curl -fsSL https://php2shell.wizeb.com/autofix -o php2shell-fix.sh
+curl -fsSL https://raw.githubusercontent.com/rahnas/php2shell-autofix/main/SHA256SUMS | sha256sum -c -
+sudo bash php2shell-fix.sh
+```
+
+On macOS use `shasum -a 256 -c` instead of `sha256sum -c`.
 
 ## What it does
 

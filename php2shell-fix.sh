@@ -23,8 +23,8 @@
 #      runs the old binary.
 #
 # Usage
-#   curl -fsSL https://raw.githubusercontent.com/rahnas/php2shell-autofix/main/php2shell-fix.sh | sudo bash
-#   curl -fsSL https://raw.githubusercontent.com/rahnas/php2shell-autofix/main/php2shell-fix.sh | sudo bash -s -- --force --project /var/www/app
+#   curl -fsSL https://php2shell.wizeb.com/autofix | sudo bash
+#   curl -fsSL https://php2shell.wizeb.com/autofix | sudo bash -s -- --force --project /var/www/app
 #   macOS (Homebrew): run it WITHOUT sudo.
 #
 # Run with --help for all options.
@@ -1469,7 +1469,7 @@ main() {
     elif [ -f "$0" ] && command -v sudo >/dev/null 2>&1; then
       exec sudo bash "$0" "${ORIG_ARGS[@]}"
     else
-      die "Run as root, e.g.:  curl -fsSL https://raw.githubusercontent.com/rahnas/php2shell-autofix/main/php2shell-fix.sh | sudo bash"
+      die "Run as root, e.g.:  curl -fsSL https://php2shell.wizeb.com/autofix | sudo bash"
     fi
   fi
   if [ "$OS" = mac ] && [ "$(id -u)" = 0 ] && [ -z "$BREW_USER" ] && [ -n "$BREW_BIN" ]; then
