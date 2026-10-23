@@ -330,10 +330,22 @@ discover_deb() {
   discover_panels apt
 }
 
+# Installed packages that make up the system PHP: the ones built from the php
+# source package, plus compiled extensions (they need a matching PHP ABI).
+# Leaves out php-* library packages (Symfony, phpMyAdmin deps…): upgrading
+# those pulls versions that need a newer PHP and blocks the whole transaction.
+rpm_core_pkgs() {
+  {
+    rpm -qa --qf '%{NAME} %{SOURCERPM}\n' 2>/dev/null | awk '$2 ~ /^php[0-9]?-[0-9]/ {print $1}'
+    rpm -q --whatrequires 'php(zend-abi)' --qf '%{NAME}\n' 2>/dev/null
+    rpm -qa --qf '%{NAME}\n' 2>/dev/null | grep -E '^apache2-mod_php[0-9]*$'
+  } | grep -v 'no package' | grep -vE '^(php[0-9]{2}-|ea-|alt-|plesk-)' | sort -u
+}
+
 discover_rpm() {
   local base bin c nn b pkgs
   ALL_PKGS=$(rpm -qa --qf '%{NAME}\n' 2>/dev/null | sort -u)
-  base=$(printf '%s\n' "$ALL_PKGS" | grep -E '^(php[0-9]?(-.*)?|apache2-mod_php[0-9]*)$' | tr '\n' ' ')
+  base=$(rpm_core_pkgs | tr '\n' ' ')
   if [ -n "${base// /}" ]; then
     bin=""
     for c in /usr/bin/php /usr/bin/php8 /usr/bin/php7 /usr/sbin/php-fpm /usr/bin/php-cgi; do
@@ -726,6 +738,92 @@ enable_crb() {
   esac
 }
 
+# ---- CentOS/RHEL 7: GetPageSpeed's free patched builds (5.6, 7.0, 8.0 with
+# plain php-* names; 7.3/7.4 as php73/php74 collections).
+GPS_RELEASE=https://extras.getpagespeed.com/release-latest.rpm
+el7_gps_branches() { echo "5.6 7.0 8.0"; }
+
+yum_last_txn() { LC_ALL=C yum -q history list 2>/dev/null | awk '$1 ~ /^[0-9]+$/ {print $1; exit}'; }
+
+el7_gps_ready() {
+  # GetPageSpeed's builds use libraries from EPEL (libraqm for php-gd, …)
+  if ! rpm -q epel-release >/dev/null 2>&1; then
+    info "Enabling EPEL (GetPageSpeed's PHP builds need some of its libraries)"
+    run yum -y install epel-release || warn "Could not install epel-release"
+  fi
+  ls /etc/yum.repos.d/getpagespeed-extras*.repo >/dev/null 2>&1 && return 0
+  info "Adding GetPageSpeed's repository (free patched PHP for CentOS 7)"
+  run yum -y install "$GPS_RELEASE"
+}
+
+el7_repo_switch() { # repo-to-enable
+  command -v yum-config-manager >/dev/null 2>&1 || run yum -y install yum-utils || return 1
+  local r
+  for r in $(yum -q repolist enabled 2>/dev/null | awk '{print $1}' | cut -d/ -f1 | grep -E '^remi-php[0-9]+$'); do
+    run yum-config-manager --disable "$r" >/dev/null && rb_add "yum-config-manager --enable $r >/dev/null"
+  done
+  run yum-config-manager --enable "$1" >/dev/null && rb_add "yum-config-manager --disable $1 >/dev/null"
+}
+
+# Move the system php-* packages to GetPageSpeed's build of branch $2.
+# $3=1 allows removing extensions that have no build for that branch.
+el7_gps_move() { # idx to_branch allow_remove
+  local i=$1 T=$2 rm_ok=$3 nn repo pkgs out blockers b n names=""
+  nn="${T//./}"; repo="getpagespeed-extras-php$nn"
+  el7_gps_ready || { needs $i "Could not add GetPageSpeed's repository"; return 1; }
+  pkgs=$(rpm_core_pkgs | tr '\n' ' ')
+  if [ "$DRY_RUN" = 1 ]; then
+    info "Would check which installed PHP extensions have a PHP $T build, remove those that don't, then:"
+    run yum -y --disablerepo='remi*' --enablerepo="$repo" upgrade $pkgs
+    run yum-config-manager --disable 'remi-php*'; run yum-config-manager --enable "$repo"
+    return 0
+  fi
+  out=$(LC_ALL=C yum --assumeno --disablerepo='remi*' --enablerepo="$repo" upgrade $pkgs 2>&1)
+  log "yum transaction check: $out"
+  blockers=$(printf '%s\n' "$out" | sed -n 's/^Error: Package: \([^ ]*\) (@.*/\1/p' | sort -u)
+  if printf '%s\n' "$out" | grep -E '^Error: Package: ' | grep -vq '(@'; then
+    needs $i "yum can't resolve the move to PHP $T (see $LOG_FILE)"; return 1
+  fi
+  for b in $blockers; do
+    n=$(rpm -q --qf '%{NAME}\n' "$b" 2>/dev/null) && names="$names $n"
+  done
+  names=$(uniq_words $names); names=" ${names% }"
+  if [ -n "${names// /}" ]; then
+    if [ "$rm_ok" != 1 ]; then
+      needs $i "No PHP $T build of:$names — rerun with --force to remove them and move to $T"; return 1
+    fi
+    warn "No PHP $T build exists for:$names — removing (their php.d settings are kept as .rpmsave)"
+    # shellcheck disable=SC2086
+    run yum -y remove $names || { needs $i "Could not remove$names"; return 1; }
+    rb_add "yum -y history undo $(yum_last_txn)   # reinstall$names"
+    pkgs=$(rpm_core_pkgs | tr '\n' ' ')
+  fi
+  tar -czf "$RUN_DIR/etc-php.tgz" -C / etc/php.ini etc/php.d etc/php-fpm.conf etc/php-fpm.d 2>/dev/null
+  rpm -qa 'php*' | sort >"$RUN_DIR/rpm-php-before.txt"
+  # shellcheck disable=SC2086
+  if ! run yum -y --disablerepo='remi*' --enablerepo="$repo" upgrade $pkgs; then
+    needs $i "yum could not upgrade to PHP $T (see $LOG_FILE)"; return 1
+  fi
+  rb_add "yum -y history undo $(yum_last_txn)   # back to the previous PHP packages"
+  el7_repo_switch "$repo" || warn "Could not switch repos — run: yum-config-manager --disable 'remi-php*' && yum-config-manager --enable $repo"
+  [ -f /etc/php.ini.rpmnew ] && info "Kept your /etc/php.ini; PHP $T's default is /etc/php.ini.rpmnew"
+  NEED_RESTART=1
+  if evaluate "$i"; then
+    I_STATE[$i]=FIXED; I_HOW[$i]="GetPageSpeed's patched PHP $T"
+    ok "${I_LABEL[$i]}: fixed — ${I_WHY[$i]}"
+  else
+    I_STATE[$i]=VULN
+  fi
+}
+
+# Nearest GetPageSpeed branch at or above $1 (plain package names).
+el7_gps_nearest() {
+  local c
+  for c in $(el7_gps_branches); do
+    [ "$(ver_cmp "$c" "$1")" = -1 ] || { echo "$c"; return; }
+  done
+}
+
 dnf_stream_exists() { dnf -q module list php 2>/dev/null | awk '$1=="php"{print $2}' | grep -qx "$1"; }
 dnf_enabled_stream() { dnf -q module list --enabled php 2>/dev/null | awk '$1=="php"{print $2; exit}'; }
 rpm_php_names() { rpm -qa --qf '%{NAME}\n' 2>/dev/null | grep -E '^php(-|$)' | tr '\n' ' '; }
@@ -770,6 +868,20 @@ tier_repos() {
       fi
       ;;
     rhel)
+      if [ "$EL" = 7 ]; then
+        for i in $(open_managed); do
+          b="${I_BRANCH[$i]}"
+          case "${I_KIND[$i]}:$b" in
+            rpm:5.6|rpm:7.0|rpm:8.0) el7_gps_move "$i" "$b" 0 ;;
+            rpm-scl:7.3|rpm-scl:7.4)
+              el7_gps_ready || continue
+              run yum -y --disablerepo='remi*' --enablerepo="getpagespeed-extras-php${b//./}" upgrade "php${b//./}-php*" || continue
+              [ "$DRY_RUN" = 1 ] && continue
+              evaluate "$i" && { I_STATE[$i]=FIXED; I_HOW[$i]="GetPageSpeed's patched build"; NEED_RESTART=1; ok "${I_LABEL[$i]}: fixed"; } ;;
+          esac
+        done
+        return 0
+      fi
       [ "$PM" = dnf ] || return 0
       case "$EL" in 8|9) ;; *) return 0 ;; esac
       for i in $(open_managed); do
@@ -1054,6 +1166,27 @@ force_deb() {
   I_BEFORE[$nv]="-"
 }
 
+# Branch --force would move installation $1 to.
+force_target_for() {
+  if [ "$FAMILY:$EL:${I_KIND[$1]}" = rhel:7:rpm ]; then echo "${TARGET:-$(el7_gps_nearest "${I_BRANCH[$1]}")}"
+  else target_for "${I_BRANCH[$1]}"; fi
+}
+
+force_el7() {
+  local i=$1 b="${I_BRANCH[$1]}" T
+  T="${TARGET:-$(el7_gps_nearest "$b")}"
+  case " $(el7_gps_branches) " in
+    *" $T "*) ;;
+    *) needs $i "On CentOS 7 the free drop-in builds are PHP $(el7_gps_branches | sed 's/ /, /g') (GetPageSpeed). For newer PHP, move the server to AlmaLinux/Rocky 9."; return 1 ;;
+  esac
+  [ "$(ver_cmp "$T" "$b")" = -1 ] && { needs $i "--target $T is older than your PHP $b"; return 1; }
+  info "${I_LABEL[$i]} $b → PHP $T (GetPageSpeed)"
+  el7_gps_move "$i" "$T" 1 || return 1
+  [ "$DRY_RUN" = 1 ] && return 0
+  [ "${I_STATE[$i]}" = FIXED ] && I_HOW[$i]="moved from $b to GetPageSpeed's patched PHP $T"
+  return 0
+}
+
 force_rpm() {
   local i=$1 b="${I_BRANCH[$1]}" T prev s=""
   if [ "$PM" != dnf ] || { [ "$EL" != 8 ] && [ "$EL" != 9 ]; }; then
@@ -1176,7 +1309,7 @@ tier_force() {
       deb)    if [ "${I_COMMON[$i]}" = php5-common ]; then
                 needs $i "PHP 5 on an end-of-life distro — upgrade the OS first"
               else force_deb "$i"; fi ;;
-      rpm)    force_rpm "$i" ;;
+      rpm)    if [ "$EL" = 7 ]; then force_el7 "$i"; else force_rpm "$i"; fi ;;
       apk)    force_apk "$i" ;;
       brew)   force_brew "$i" ;;
       pacman) run pacman -Syu --noconfirm
@@ -1376,23 +1509,6 @@ sury_current() {
   return 1
 }
 
-# Tested commands to move plain php-* packages on EL7 to GetPageSpeed's free
-# patched build of branch $1. Only core PHP and its compiled extensions are
-# upgraded: upgrading every php-* package would also pull Remi's newer
-# libraries (phpMyAdmin deps, Symfony...) that need PHP 7+.
-el7_gps_steps() { # to_branch
-  local nn="${1//./}"
-  cat <<EOF
-(GetPageSpeed, free)
-1. sudo yum -y install https://extras.getpagespeed.com/release-latest.rpm
-2. sudo yum -y remove php-suhosin       (only if installed — no build exists for PHP $1)
-3. PKGS=\$( { rpm -qa --qf '%{NAME} %{SOURCERPM}\n' | awk '\$2 ~ /^php-[0-9]/ {print \$1}'; rpm -q --whatrequires 'php(zend-abi)' --qf '%{NAME}\n'; } | grep -v 'no package' | sort -u )
-4. sudo yum --disablerepo='remi*' --enablerepo=getpagespeed-extras-php$nn upgrade \$PKGS
-5. sudo yum -y install yum-utils && sudo yum-config-manager --disable 'remi-php*' && sudo yum-config-manager --enable getpagespeed-extras-php$nn
-6. sudo systemctl restart php-fpm httpd  (whichever you run), then rerun this script
-EOF
-}
-
 # The nearest branch at or above $1 that has a FREE patched build for this
 # OS and install type. Prints "branch|commands" (commands may be empty when
 # the script itself can do the move with --force --target).
@@ -1409,7 +1525,7 @@ nearest_free() { # branch kind
     [ "$(ver_cmp "$c" "$b")" = -1 ] && continue
     case "$FAMILY:$EL:$kind:$c" in
       rhel:7:rpm:5.6|rhel:7:rpm:7.0|rhel:7:rpm:8.0)
-        echo "$c|$(el7_gps_steps "$c")"; return ;;
+        echo "$c|rerun with: --force   (moves to GetPageSpeed's free patched PHP $c; extensions with no $c build, such as suhosin, are removed)"; return ;;
       rhel:7:rpm-scl:7.3|rhel:7:rpm-scl:7.4)
         [ "$c" = "$b" ] || continue
         echo "$c|sudo yum -y install https://extras.getpagespeed.com/release-latest.rpm && sudo yum --enablerepo=getpagespeed-extras-php${c//./} upgrade 'php${c//./}-php*' (GetPageSpeed, free)"; return ;;
@@ -1479,11 +1595,25 @@ eol_options() {
   fi
   echo "Option $n — stay on PHP $b: $(lts_option)"
   n=$((n + 1))
-  if [ "$FAMILY" = debian ] && ! sury_current; then
+  if [ "$FAMILY:$EL" = rhel:7 ]; then
+    echo "Option $n — move to a supported OS (AlmaLinux or Rocky Linux 9): CentOS 7 itself is end-of-life — most work."
+  elif [ "$FAMILY" = debian ] && ! sury_current; then
     echo "Option $n — upgrade the OS to a supported release (e.g. Ubuntu 24.04 / Debian 12), which gets patched PHP — most work."
   elif [ -n "$t" ]; then
     echo "Option $n — move to a supported version: --force (PHP $t) — most work, old apps may need code changes."
   fi
+}
+
+# Could a normal run plausibly patch installation $1 without changing branch?
+repo_fix_possible() {
+  local b="${I_BRANCH[$1]}"
+  [ -n "$(fixed_for "$b")" ] && return 0
+  case "$FAMILY:$EL:${I_KIND[$1]}:$b" in
+    debian:*:deb:5.6|debian:*:deb:7.4|debian:*:deb:8.0|debian:*:deb:8.1) sury_current; return ;;
+    rhel:8:rpm:7.4|rhel:8:rpm:8.0|rhel:8:rpm:8.1|rhel:9:rpm:7.4|rhel:9:rpm:8.0|rhel:9:rpm:8.1) return 0 ;;
+    rhel:7:rpm:5.6|rhel:7:rpm:7.0|rhel:7:rpm:8.0|rhel:7:rpm-scl:7.3|rhel:7:rpm-scl:7.4) return 0 ;;
+  esac
+  return 1
 }
 
 print_row() { # icon label before after text
@@ -1502,9 +1632,13 @@ summary() {
       FORCED) icon="$GRN✓$RST"; text="${I_HOW[$i]}"; note="${I_NOTE[$i]}" ;;
       *)      open=$((open + 1))
               if [ "${I_MITIG[$i]}" = 1 ]; then icon="$YEL!$RST"; text="partly protected by temporary php.ini mitigation"
-              elif [ "$DRY_RUN" = 1 ]; then icon="$RED✗$RST"; text="vulnerable (${I_WHY[$i]}) — plan shown above"
+              elif [ "$DRY_RUN" = 1 ]; then icon="$RED✗$RST"; text="vulnerable now (${I_WHY[$i]})"
               else icon="$RED✗$RST"; text="still vulnerable (${I_WHY[$i]})"; fi
-              note="${I_NOTE[$i]:-$(hint_for $i)}" ;;
+              note="${I_NOTE[$i]:-$(hint_for $i)}"
+              if [ "$DRY_RUN" = 1 ] && repo_fix_possible "$i"; then case "${I_KIND[$i]}" in docker|manual|panel) ;; *)
+                note="A real run upgrades it from the repositories above and re-checks; most servers end up patched.
+If it is still vulnerable after that:
+$note" ;; esac; fi ;;
     esac
     print_row "$icon" "${I_LABEL[$i]}" "${I_BEFORE[$i]:-?}" "${I_AFTER[$i]:-?}" "$text"
     [ -n "$note" ] && printf '%s\n' "$note" | sed "1s/^/      $DIM→ /; 2,\$s/^/        /; \$s/\$/$RST/"
@@ -1568,9 +1702,9 @@ main() {
   fi
 
   if [ -n "$TARGET" ]; then
-    case " 5.6 7.4 8.0 8.1 $SUPPORTED_BRANCHES " in
+    case " 5.6 7.0 7.4 8.0 8.1 $SUPPORTED_BRANCHES " in
       *" $TARGET "*) ;;
-      *) die "--target must be one of: $SUPPORTED_BRANCHES (or 5.6, 7.4, 8.0, 8.1 where a patched build exists)" ;;
+      *) die "--target must be one of: $SUPPORTED_BRANCHES (or 5.6, 7.0, 7.4, 8.0, 8.1 where a patched build exists)" ;;
     esac
   fi
 
@@ -1620,13 +1754,13 @@ main() {
 
   if [ -n "$(open_managed)" ]; then
     local first t
-    first=$(open_managed | head -n1); t=$(target_for "${I_BRANCH[$first]}")
+    first=$(open_managed | head -n1); t=$(force_target_for "$first")
     if [ ${#PROJECTS[@]} -gt 0 ] && [ -n "$t" ]; then
       step "Checking your code against PHP $t"
       compat_scan "$t"
     fi
     if [ "$FORCE" = 1 ]; then
-      step "--force: moving to a supported PHP branch"
+      step "--force: moving to a newer PHP branch"
       countdown
       tier_force
     else

@@ -32,8 +32,10 @@ Rarely, no patched build of your version exists for your OS (for example PHP 5.5
 PHP 7.4 on Ubuntu 20.04 without Ubuntu Pro). The summary then applies a temporary
 mitigation and lists your options, cheapest first:
 
-1. **Smallest free upgrade**, e.g. PHP 5.5 → 5.6 on CentOS 7 (GetPageSpeed's free patched
-   build) with the exact, tested commands.
+1. **Smallest free upgrade**, e.g. PHP 5.5 → 5.6 on CentOS 7, using GetPageSpeed's free
+   patched build. On CentOS 7 `--force` does this for you: it upgrades only core PHP and its
+   extensions (never phpMyAdmin or other PHP libraries), removes extensions that have no
+   5.6 build (such as suhosin), switches the repos and can be undone with `--rollback`.
 2. **Stay on your version**: Ubuntu Pro (free for up to 5 machines) or paid extended
    support (TuxCare, Zend, Freexian).
 3. **Move to a supported version** with `--force` (8.3 by default), after checking your code:
@@ -70,7 +72,8 @@ before it fails:
 3. **Patch in place** from the repositories you already use, upgrading only that
    branch's PHP packages — never a full system upgrade.
 4. **Same-branch repo**: if your distro has no fix, add Ondřej Surý's repository
-   (Debian/Ubuntu) or Remi Collet's (RHEL/Alma/Rocky/Oracle 8 and 9) and patch the
+   (Debian/Ubuntu), Remi Collet's (RHEL/Alma/Rocky/Oracle 8 and 9) or GetPageSpeed's
+   (CentOS 7: PHP 5.6, 7.0, 7.3, 7.4, 8.0) and patch the
    *same* PHP version — this covers most end-of-life versions (5.6, 7.x, 8.0, 8.1):
    a 7.4 server stays on 7.4. If that repo has no fix either, it is removed again and
    the summary names the same-version option for your OS (Ubuntu Pro — free for up to
@@ -125,7 +128,9 @@ Backups and the rollback script: `/var/backups/php2shell-fix/<run>/`.
 | Ubuntu 20.04 | EOL 7.4, Sury no longer publishes | Repo removed again, mitigation applied, `--force` advised |
 | Rocky Linux 9 | Old unpatched 8.0 | Patched from Rocky's own repo |
 | Rocky Linux 9 | Rocky fix hidden | Remi's patched 8.0 (`php:remi-8.0`), same branch |
-| CentOS 7 | Remi PHP 5.5.38 + suhosin + phpMyAdmin | Suggested steps move it to GetPageSpeed's patched 5.6.40; phpMyAdmin untouched |
+| CentOS 7 | Remi PHP 5.6.40 (unpatched) | Normal run: GetPageSpeed's patched 5.6.40, same version |
+| CentOS 7 | Remi PHP 5.5.38 + suhosin + phpMyAdmin (also a real server) | `--force`: suhosin removed, GetPageSpeed's patched 5.6.40, phpMyAdmin untouched; `--rollback` restores 5.5.38 and suhosin |
+| CentOS 7 | Base PHP 5.4.16 with php-gd | `--force`: patched 5.6.40 (EPEL enabled for php-gd); `--rollback` restores 5.4.16 |
 | Alpine 3.18 | EOL php81 | Explains no php83 on that release; `--target 8.2` works |
 | `php:7.4-fpm` image | Source build | Mitigated, told to rebuild from a newer image |
 | Host with containers | Vulnerable container running | Reported with image name, not modified |
