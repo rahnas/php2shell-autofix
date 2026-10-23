@@ -57,6 +57,8 @@ Usage:  sudo bash php2shell-fix.sh [options]        (macOS/Homebrew: no sudo)
                       branches) to a supported branch. Old branch stays
                       installed but stops serving. MAY BREAK OLD APPS.
   -t, --target X.Y    Branch to move to with --force (8.2-8.5, default 8.3).
+                      5.6, 7.4, 8.0 or 8.1 also work where Sury or Remi has a
+                      patched build — the smallest step from older PHP.
   -p, --project DIR   Scan DIR with PHPCompatibility for the target branch
                       before forcing (repeatable). Needs internet (Composer).
   -y, --yes           Don't pause before --force changes.
@@ -1348,21 +1350,75 @@ tier_restart() {
 
 # ----------------------------------------------------------- reporting --
 
-# Where a patched build of the SAME end-of-life branch can still come from,
-# when no free repository has one for this OS.
+# How to stay on the SAME end-of-life branch when no free repository has a
+# patched build of it for this OS.
 lts_option() {
   case "$OS_ID:${UBU_CODENAME:-$OS_CODENAME}" in
     ubuntu:xenial|ubuntu:bionic|ubuntu:focal|ubuntu:trusty)
       if command -v pro >/dev/null 2>&1 && pro status 2>/dev/null | grep -qE '^esm-(apps|infra)[[:space:]]+yes[[:space:]]+enabled'; then
-        echo "Ubuntu Pro is attached but has no fix yet — rerun later to stay on this version."
+        echo "free with Ubuntu Pro, which is attached but has no fix yet — rerun later."
       else
-        echo "Stay on this version: Ubuntu Pro has a patched build and is free for up to 5 machines (ubuntu.com/pro). Run: sudo pro attach <token>, then rerun this script."
+        echo "free with Ubuntu Pro for up to 5 machines (ubuntu.com/pro): sudo pro attach <token>, then rerun this script."
       fi ;;
     debian:stretch|debian:buster|debian:bullseye)
-      echo "Stay on this version: Freexian ELTS (paid, freexian.com) publishes patched PHP for Debian $OS_VER; add its repo, then rerun this script." ;;
+      echo "paid — Freexian ELTS (freexian.com) publishes patched PHP for Debian $OS_VER; add its repo, then rerun this script." ;;
     *)
-      echo "Stay on this version: paid extended support (TuxCare ELS for PHP, or Zend PHP LTS) patches end-of-life branches." ;;
+      echo "paid — extended support from TuxCare ELS for PHP (tuxcare.com) or Zend PHP LTS (zend.com) patches end-of-life versions." ;;
   esac
+}
+
+# Releases Ondřej Surý still publishes fixed builds for (he drops a release
+# when its standard support ends; the repo stays but stops updating).
+sury_current() {
+  case "$OS_ID:${UBU_CODENAME:-$OS_CODENAME}" in
+    *:jammy|*:noble|*:plucky|*:questing|*:resolute|debian:bookworm|debian:trixie|debian:forky) return 0 ;;
+  esac
+  return 1
+}
+
+# Tested commands to move plain php-* packages on EL7 to GetPageSpeed's free
+# patched build of branch $1. Only core PHP and its compiled extensions are
+# upgraded: upgrading every php-* package would also pull Remi's newer
+# libraries (phpMyAdmin deps, Symfony...) that need PHP 7+.
+el7_gps_steps() { # to_branch
+  local nn="${1//./}"
+  cat <<EOF
+(GetPageSpeed, free)
+1. sudo yum -y install https://extras.getpagespeed.com/release-latest.rpm
+2. sudo yum -y remove php-suhosin       (only if installed — no build exists for PHP $1)
+3. PKGS=\$( { rpm -qa --qf '%{NAME} %{SOURCERPM}\n' | awk '\$2 ~ /^php-[0-9]/ {print \$1}'; rpm -q --whatrequires 'php(zend-abi)' --qf '%{NAME}\n'; } | grep -v 'no package' | sort -u )
+4. sudo yum --disablerepo='remi*' --enablerepo=getpagespeed-extras-php$nn upgrade \$PKGS
+5. sudo yum -y install yum-utils && sudo yum-config-manager --disable 'remi-php*' && sudo yum-config-manager --enable getpagespeed-extras-php$nn
+6. sudo systemctl restart php-fpm httpd  (whichever you run), then rerun this script
+EOF
+}
+
+# The nearest branch at or above $1 that has a FREE patched build for this
+# OS and install type. Prints "branch|commands" (commands may be empty when
+# the script itself can do the move with --force --target).
+nearest_free() { # branch kind
+  local b="$1" kind="$2" c list=""
+  case "$FAMILY:$EL:$kind" in
+    rhel:7:rpm)     list="5.6 7.0 8.0" ;;          # GetPageSpeed, plain php-* names
+    rhel:7:rpm-scl) list="7.3 7.4" ;;              # GetPageSpeed, Remi-style SCL names
+    rhel:8:rpm|rhel:9:rpm) list="7.4 8.0 8.1" ;;   # Remi module streams
+    debian:*:deb)   sury_current && list="5.6 7.4 8.0 8.1" ;;   # Ondřej Surý
+  esac
+  [ "$FAMILY" = debian ] && ! sury_current && return 0
+  for c in $list $SUPPORTED_BRANCHES; do
+    [ "$(ver_cmp "$c" "$b")" = -1 ] && continue
+    case "$FAMILY:$EL:$kind:$c" in
+      rhel:7:rpm:5.6|rhel:7:rpm:7.0|rhel:7:rpm:8.0)
+        echo "$c|$(el7_gps_steps "$c")"; return ;;
+      rhel:7:rpm-scl:7.3|rhel:7:rpm-scl:7.4)
+        [ "$c" = "$b" ] || continue
+        echo "$c|sudo yum -y install https://extras.getpagespeed.com/release-latest.rpm && sudo yum --enablerepo=getpagespeed-extras-php${c//./} upgrade 'php${c//./}-php*' (GetPageSpeed, free)"; return ;;
+      rhel:7:*) continue ;;   # no free newer build with matching package names on EL7
+      *)
+        [ "$c" = "$b" ] && continue   # same branch was already tried automatically
+        echo "$c|"; return ;;
+    esac
+  done
 }
 
 hint_for() {
@@ -1397,8 +1453,37 @@ hint_for() {
     pkg)     echo "Update ${I_COMMON[$i]} when its vendor publishes a fix." ;;
     *)
       if [ -n "$fx" ]; then echo "Your distro hasn't shipped the fix yet — rerun later, or use --force to move to $t."
-      else echo "$(lts_option) Last resort: --force moves to PHP $t (add --project /path/to/app to check your code first)."; fi ;;
+      else eol_options "$i"; fi ;;
   esac
+}
+
+# Numbered choices for an end-of-life branch with no patched build here.
+eol_options() {
+  local i=$1 b="${I_BRANCH[$1]}" t nf nb cmd n=1
+  t=$(target_for "$b")
+  nf=$(nearest_free "$b" "${I_KIND[$i]}")
+  nb="${nf%%|*}"; cmd="${nf#*|}"
+  if [ -n "$nb" ] && [ "$(ver_cmp "$nb" "${t:-99}")" = -1 ]; then
+    if [ "$nb" = "$b" ]; then
+      echo "Option $n — patched build of your PHP $b (free, nothing to migrate):"
+    else
+      echo "Option $n — smallest upgrade, to PHP $nb (free; little or no code change from $b):"
+    fi
+    if [ -n "$cmd" ]; then printf '%s\n' "$cmd" | sed 's/^/  /'
+    else echo "  rerun with: --force --target $nb   (add --project /path/to/app to check your code first)"; fi
+    case " $SUPPORTED_BRANCHES " in
+      *" $nb "*) [ "$nb" = 8.2 ] && echo "  PHP 8.2 gets security fixes only until 31 Dec 2026 — plan a move to 8.3+." ;;
+      *) [ "$nb" != "$b" ] && echo "  PHP $nb is end-of-life too: it fixes PHP2Shell, but plan a move to 8.3+." ;;
+    esac
+    n=$((n + 1))
+  fi
+  echo "Option $n — stay on PHP $b: $(lts_option)"
+  n=$((n + 1))
+  if [ "$FAMILY" = debian ] && ! sury_current; then
+    echo "Option $n — upgrade the OS to a supported release (e.g. Ubuntu 24.04 / Debian 12), which gets patched PHP — most work."
+  elif [ -n "$t" ]; then
+    echo "Option $n — move to a supported version: --force (PHP $t) — most work, old apps may need code changes."
+  fi
 }
 
 print_row() { # icon label before after text
@@ -1422,7 +1507,7 @@ summary() {
               note="${I_NOTE[$i]:-$(hint_for $i)}" ;;
     esac
     print_row "$icon" "${I_LABEL[$i]}" "${I_BEFORE[$i]:-?}" "${I_AFTER[$i]:-?}" "$text"
-    [ -n "$note" ] && printf '      %s→ %s%s\n' "$DIM" "$note" "$RST"
+    [ -n "$note" ] && printf '%s\n' "$note" | sed "1s/^/      $DIM→ /; 2,\$s/^/        /; \$s/\$/$RST/"
     i=$((i + 1))
   done
   [ -n "$STALE_LEFT" ] && { open=$((open + 1)); bad "Some processes still run old PHP code — restart them."; }
@@ -1483,7 +1568,10 @@ main() {
   fi
 
   if [ -n "$TARGET" ]; then
-    case " $SUPPORTED_BRANCHES " in *" $TARGET "*) ;; *) die "--target must be one of: $SUPPORTED_BRANCHES" ;; esac
+    case " 5.6 7.4 8.0 8.1 $SUPPORTED_BRANCHES " in
+      *" $TARGET "*) ;;
+      *) die "--target must be one of: $SUPPORTED_BRANCHES (or 5.6, 7.4, 8.0, 8.1 where a patched build exists)" ;;
+    esac
   fi
 
   if [ "$OS" = mac ]; then

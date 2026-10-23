@@ -28,11 +28,15 @@ curl -fsSL https://php2shell.wizeb.com/autofix | sudo bash -s -- --dry-run
 
 ### Only if the summary tells you to: `--force`
 
-Rarely, no patched build of your version exists for your OS (for example PHP 7.4 on
-Ubuntu 20.04 without Ubuntu Pro). The summary then says so, applies a temporary
-mitigation, and names the way to stay on your version (such as Ubuntu Pro). If you'd
-rather upgrade PHP instead, `--force` moves it to a supported version (8.3 by default)
-after checking your code:
+Rarely, no patched build of your version exists for your OS (for example PHP 5.5, or
+PHP 7.4 on Ubuntu 20.04 without Ubuntu Pro). The summary then applies a temporary
+mitigation and lists your options, cheapest first:
+
+1. **Smallest free upgrade**, e.g. PHP 5.5 → 5.6 on CentOS 7 (GetPageSpeed's free patched
+   build) with the exact, tested commands.
+2. **Stay on your version**: Ubuntu Pro (free for up to 5 machines) or paid extended
+   support (TuxCare, Zend, Freexian).
+3. **Move to a supported version** with `--force` (8.3 by default), after checking your code:
 
 ```bash
 curl -fsSL https://php2shell.wizeb.com/autofix | sudo bash -s -- --force --project /var/www/app
@@ -92,7 +96,7 @@ before it fails:
 | --- | --- |
 | `-n`, `--dry-run` | Report and show the plan; change nothing. |
 | `-f`, `--force` | Move unpatchable PHP to a supported branch. **Old apps can break.** Pauses 10 s on a terminal. |
-| `-t`, `--target X.Y` | Branch for `--force`: 8.2, 8.3 (default), 8.4 or 8.5. |
+| `-t`, `--target X.Y` | Branch for `--force`: 8.2, 8.3 (default), 8.4 or 8.5; also 5.6, 7.4, 8.0 or 8.1 where Sury or Remi has a patched build. |
 | `-p`, `--project DIR` | Scan DIR with PHPCompatibility before forcing. Repeatable. |
 | `-y`, `--yes` | Skip the 10-second pause before `--force`. |
 | `--no-restart` | Don't restart services (it still tells you what needs it). |
@@ -121,6 +125,7 @@ Backups and the rollback script: `/var/backups/php2shell-fix/<run>/`.
 | Ubuntu 20.04 | EOL 7.4, Sury no longer publishes | Repo removed again, mitigation applied, `--force` advised |
 | Rocky Linux 9 | Old unpatched 8.0 | Patched from Rocky's own repo |
 | Rocky Linux 9 | Rocky fix hidden | Remi's patched 8.0 (`php:remi-8.0`), same branch |
+| CentOS 7 | Remi PHP 5.5.38 + suhosin + phpMyAdmin | Suggested steps move it to GetPageSpeed's patched 5.6.40; phpMyAdmin untouched |
 | Alpine 3.18 | EOL php81 | Explains no php83 on that release; `--target 8.2` works |
 | `php:7.4-fpm` image | Source build | Mitigated, told to rebuild from a newer image |
 | Host with containers | Vulnerable container running | Reported with image name, not modified |
